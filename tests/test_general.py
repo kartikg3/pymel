@@ -1255,6 +1255,59 @@ class test_parent(unittest.TestCase):
         self.assertEqual(self.sphere.getParent(), self.cone)
         self.assertEqual(self.cube.getParent(), self.cone)
 
+    # these testsa are here because removeObject flag is a special case that has
+    # to be specially handled, and there was a bug introduced at one point
+    # because of it
+
+    def test_parent_removeObject_one(self):
+        pm.parent(self.sphere, self.cube)
+        self.assertEqual(self.sphere.getParent(), self.cube)
+        result = pm.parent(self.sphere, removeObject=True)
+        self.assertIs(result, None)
+        self.assertEqual(self.sphere.exists(), False)
+
+    def test_parent_removeObject_many(self):
+        pm.parent(self.sphere, self.cube)
+        pm.parent(self.cone, self.cube)
+        self.assertEqual(self.sphere.getParent(), self.cube)
+        self.assertEqual(self.cone.getParent(), self.cube)
+        result = pm.parent(self.sphere, self.cone, removeObject=True)
+        self.assertIs(result, None)
+        self.assertFalse(self.sphere.exists())
+        self.assertFalse(self.cone.exists())
+
+    def test_parent_to_nonexistent_object(self):
+        with self.assertRaises(pm.MayaNodeError):
+            pm.parent(self.sphere, 'does_not_exist')
+
+
+class test_spaceLocator(unittest.TestCase):
+    def test_nonUniqueName(self):
+        cmds.file(f=1, new=1)
+        loc1 = cmds.spaceLocator(name='theLoc')
+        cmds.group(loc1, name='theGroup')
+        self.assertEqual(cmds.ls('*theLoc', long=True), ['|theGroup|theLoc'])
+        loc2 = pm.spaceLocator(name='theLoc')
+        self.assertEqual(type(loc2), pm.nt.Transform)
+        self.assertEqual(loc2.fullPath(), '|theLoc')
+
+    def test_position(self):
+        cmds.file(f=1, new=1)
+        locTrans = pm.spaceLocator(name='theLoc', position=(1,2,3))
+        locShape = locTrans.getShape()
+        self.assertEqual(type(locShape), pm.nt.Locator)
+        self.assertEqual(locTrans.getTranslation(), pm.dt.Vector(0,0,0))
+        self.assertEqual(locShape.attr('localPosition').get(),
+                         pm.dt.Vector(1,2,3))
+
+        # Ok, this is lame - in create mode, position set's the local position
+        # (on the shape) - but in edit mode, it sets the translation (on the
+        # transform).  I'm not going to bother testing what seems like a bug
+        # / mistake...
+        # pm.spaceLocator(locShape, e=1, position=(4,5,6))
+        # self.assertEqual(locTrans.getTranslation(), pm.dt.Vector(0,0,0))
+        # self.assertEqual(locShape.attr('localPosition').get(),
+        #                  pm.dt.Vector(4,5,6))
 
 class test_lazyDocs(unittest.TestCase):
     # Test can't be reliably run if pymel.all is imported... re-stubbing
@@ -1399,8 +1452,51 @@ class test_addAttr(unittest.TestCase):
                          enumName={'giraffe':1, 'gazelle':5, 'lion':3})
         self.assertEqual(self.loc.attr('testEnumAttr').getEnums(), newEnums)
 
+    def test_type_double(self):
+        self.loc.addAttr('autoDouble', type='double')
+        self.assertEqual(pm.addAttr(self.loc + '.autoDouble', query=1,
+                                    attributeType=1),
+                         'double')
+        self.assertEqual(pm.addAttr(self.loc + '.autoDouble', query=1,
+                                    dataType=1),
+                         'TdataNumeric')
+
+    def test_type_mesh(self):
+        self.loc.addAttr('autoMesh', type='mesh')
+        self.assertEqual(pm.addAttr(self.loc + '.autoMesh', query=1,
+                                    attributeType=1),
+                         'typed')
+        self.assertEqual(pm.addAttr(self.loc + '.autoMesh', query=1,
+                                    dataType=1),
+                         'mesh')
+
+    def test_type_vector(self):
+        self.loc.addAttr('autoVec', type=pm.dt.Vector)
+        self.assertEqual([x.attrName() for x in self.loc.listAttr()
+                         if 'autoVec' in x.attrName()],
+                         [u'autoVec', u'autoVecX',
+                          u'autoVecY', u'autoVecZ'])
+
+    def test_type_float3Color(self):
+        self.loc.addAttr('autoFloat3Col', type='float3', usedAsColor=1)
+        self.assertEqual([x.attrName() for x in self.loc.listAttr()
+                         if 'autoFloat3Col' in x.attrName()],
+                         [u'autoFloat3Col', u'autoFloat3ColR',
+                          u'autoFloat3ColG', u'autoFloat3ColB'])
+
+    def test_type_long2(self):
+        self.loc.addAttr('autoLong2', type='long2',
+                         childSuffixes=['_first', '_second'])
+        self.assertEqual([x.attrName() for x in self.loc.listAttr()
+                         if 'autoLong2' in x.attrName()],
+                         [u'autoLong2', u'autoLong2_first',
+                          u'autoLong2_second'])
+
 
 class test_Attribute_iterDescendants(unittest.TestCase):
+    # FIXME: to prevent this test from changing over time it might be a good idea to create
+    # custom MPxNode type with known attributes
+    # See also: test_nodetypes.testCase_listAttr
     def setUp(self):
         pm.newFile(f=1)
         self.cube1 = pm.polyCube(ch=0)[0]
@@ -1448,9 +1544,10 @@ class test_Attribute_iterDescendants(unittest.TestCase):
 
 
     def test_multiCompound(self):
-        results = sorted(x.name() for x in
-                         self.blend.attr('inputTarget').iterDescendants())
-        expected = [u'blendShape1.inputTarget[0]',
+        results = set(x.name() for x in
+                      self.blend.attr('inputTarget').iterDescendants())
+        expected = {
+            u'blendShape1.inputTarget[0]',
             u'blendShape1.inputTarget[0].baseWeights',
             u'blendShape1.inputTarget[0].inputTargetGroup',
             u'blendShape1.inputTarget[0].inputTargetGroup[0]',
@@ -1472,24 +1569,32 @@ class test_Attribute_iterDescendants(unittest.TestCase):
             u'blendShape1.inputTarget[0].normalizationGroup',
             u'blendShape1.inputTarget[0].paintTargetIndex',
             u'blendShape1.inputTarget[0].paintTargetWeights',
-        ]
-        self.assertEqual(results, expected)
+        }
+        self.assertTrue(results.issuperset(expected))
+        self.assertNotIn(u'blendShape1.inputTarget[-1].baseWeights', results)
+        self.assertNotIn(u'blendShape1.inputTarget[-1].inputTargetGroup[-1].inputTargetItem[-1].inputComponentsTarget', results)
 
         results = sorted(x.name() for x in
                          self.blend.attr('inputTarget').iterDescendants(levels=1))
         expected = [u'blendShape1.inputTarget[0]']
         self.assertEqual(results, expected)
 
-        results = sorted(x.name() for x in
-                         self.blend.attr('inputTarget').iterDescendants(levels=2))
-        expected = [u'blendShape1.inputTarget[0]',
+        results = set(x.name() for x in
+                      self.blend.attr('inputTarget').iterDescendants(levels=2))
+        expected = {
+            u'blendShape1.inputTarget[0]',
             u'blendShape1.inputTarget[0].baseWeights',
             u'blendShape1.inputTarget[0].inputTargetGroup',
             u'blendShape1.inputTarget[0].normalizationGroup',
             u'blendShape1.inputTarget[0].paintTargetIndex',
             u'blendShape1.inputTarget[0].paintTargetWeights',
-        ]
-        self.assertEqual(results, expected)
+        }
+        self.assertTrue(results.issuperset(expected))
+        self.assertNotIn(u'blendShape1.inputTarget[-1].baseWeights', results)
+        self.assertNotIn(u'blendShape1.inputTarget[-1].inputTargetGroup[-1].inputTargetItem[-1].inputComponentsTarget', results)
+        self.assertNotIn(u'blendShape1.inputTarget[0].inputTargetGroup[0].inputTargetItem[6000].inputComponentsTarget', results)
+        self.assertNotIn(u'blendShape1.inputTarget[-1].inputTargetGroup[-1]', results)
+        self.assertNotIn(u'blendShape1.inputTarget[0].inputTargetGroup[0]', results)
 
         results = sorted(x.name() for x in
                          self.blend.attr('inputTarget').iterDescendants(levels=0))
@@ -1566,6 +1671,45 @@ class test_Attribute_minMax(unittest.TestCase):
     def test_getBounds_unboundedElem(self):
         self.getNoBoundsTest(self.unboundedElem)
 
+class test_Attribute_getSetAttrCmds(unittest.TestCase):
+    def setUp(self):
+        pm.newFile(f=1)
+        self.loc = pm.spaceLocator()
+
+    def test_float(self):
+        attr = self.loc.attr('translateX')
+        attr.set(5.5)
+        attrCmds = [x.strip() for x in attr.getSetAttrCmds()]
+        self.assertEqual(attrCmds, ['setAttr ".tx" 5.5;'])
+
+    def test_string(self):
+        self.loc.addAttr('myString', dataType='string')
+        attr = self.loc.attr('myString')
+        attr.set('foo')
+        attrCmds = [x.strip() for x in attr.getSetAttrCmds()]
+        self.assertEqual(attrCmds, ['setAttr ".myString" -type "string" "foo";'])
+
+    def test_float3(self):
+        attr = self.loc.attr('rotate')
+        attr.set((1.0, 2.0, 33.3))
+        attrCmds = [x.strip() for x in attr.getSetAttrCmds()]
+        self.assertEqual(attrCmds, [
+            'setAttr ".r" -type "double3" 1 2 33.3 ;',
+        ])
+
+    def test_intMulti(self):
+        self.loc.addAttr('myIntMulti', attributeType='long', multi=True)
+        attr = self.loc.attr('myIntMulti')
+        attr[0].set(1)
+        attr[1].set(5)
+        attr[5].set(7)
+        attrCmds = [x.strip() for x in attr.getSetAttrCmds()]
+        self.assertEqual(attrCmds, [
+            'setAttr -s 3 ".myIntMulti";',
+            'setAttr ".myIntMulti[0]" 1;',
+            'setAttr ".myIntMulti[1]" 5;',
+            'setAttr ".myIntMulti[5]" 7;',
+        ])
 
 #suite = unittest.TestLoader().loadTestsFromTestCase(testCase_nodesAndAttributes)
 #suite.addTest(unittest.TestLoader().loadTestsFromTestCase(testCase_listHistory))
